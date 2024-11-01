@@ -272,11 +272,11 @@ async function countAvailableQuestions(db, groupId, difficulty) {
 // Function to add challenge to the database
 async function addChallenge(db, groupId, difficulty, roomID, ChallengeId) {
 	const insertChallenge = `
-        INSERT INTO Challenges (GroupId, Difficulty, RoomId, State, StartTime,ChallengeId)
+        INSERT INTO Challenges (GroupId, Difficulty, RoomId, State, StartTime, ChallengeId)
         VALUES (?, ?, ?, ?, ?,?)
     `;
 	const challengeStartTime = new Date().toISOString();
-	await db.prepare(insertChallenge).bind(groupId, difficulty, roomID, 'Pending', challengeStartTime).run();
+	await db.prepare(insertChallenge).bind(groupId, difficulty, roomID, 'Pending', challengeStartTime, ChallengeId).run();
 }
 
 // Function to determine required questions based on difficulty
