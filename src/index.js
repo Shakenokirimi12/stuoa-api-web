@@ -1,27 +1,40 @@
 export default {
 	async fetch(request, env, ctx) {
 		const { pathname } = new URL(request.url);
+		const referer = request.headers.get('Referer');
+
+		//if (!referer || !referer.includes('soshosai.com')) {
+		//	return new Response('Forbidden', { status: 403 })
+		//}
+
+		const apiKey = request.headers.get('Authorization')?.split(' ')[1]; // Bearerトークンの場合
+		const validApiKey = env.API_KEY;
+
+		if (apiKey !== validApiKey) {
+			return new Response('Unauthorized. I learned to use authorization. Perhaps are you a Zli member?', { status: 401 });
+		}
+
+		if (request.method === 'OPTIONS') {
+			return new Response(null, {
+				headers: responseHeaders,
+				status: 204,
+			});
+		}
+
+		if (request.url.startsWith('http://')) {
+			const httpsUrl = request.url.replace('http://', 'https://');
+			return addHeaders(Response.redirect(httpsUrl, 301));
+		}
 
 		// POST: Answer registration
 		if (pathname === '/answer/register' && request.method === 'POST') {
-			return registerAnswer(request, env);
+			return addHeaders(registerAnswer(request, env));
 		}
 
 		// POST: Finish the current room challenge
 		if (pathname.startsWith('/finish') && request.method === 'POST') {
 			const roomCode = pathname.split('/').pop();
-			return finishChallenge(roomCode, request, env);
-		}
-
-		// GET: Retrieve file list for the game
-		if (pathname === '/filelist') {
-			return getFileList(env);
-		}
-
-		// GET: Download file
-		if (pathname.startsWith('/getfile')) {
-			const filename = pathname.split('/').pop();
-			return getFile(filename, env);
+			return addHeaders(finishChallenge(roomCode, request, env));
 		}
 
 		// GET: Get a question for a specified level and challenger
@@ -30,16 +43,31 @@ export default {
 			const groupId = groupIdMatch[1];
 			const level = groupIdMatch[2];
 			console.log(groupId, level);
-			return getQuestion(level, groupId, env);
+			return addHeaders(getQuestion(level, groupId, env));
 		}
 
 		if (request.method === 'POST' && request.url.endsWith('/adminui/regChallenge')) {
-			return await registerChallenge(request, env);
+			return addHeaders(await registerChallenge(request, env));
 		}
 
-		return new Response("Not found", { status: 404 });
-	}
+		return addHeaders(new Response('Not found', { status: 404 }));
+	},
 };
+
+function addHeaders(response) {
+	const headers = new Headers(response.headers);
+	headers.set('Access-Control-Allow-Origin', 'https://web.save-the-uoa.soshosai.com');
+	headers.set('Content-Type', 'application/json'); // Ensure JSON content type for responses
+	headers.set('Content-Security-Policy', "default-src 'self'");
+	headers.set('X-Content-Type-Options', 'nosniff');
+	headers.set('X-XSS-Protection', '1; mode=block');
+	headers.set('Strict-Transport-Security', 'max-age=63072000; includeSubDomains; preload');
+	return new Response(response.body, {
+		status: response.status,
+		statusText: response.statusText,
+		headers: headers,
+	});
+}
 
 // Answer registration function
 async function registerAnswer(request, env) {
@@ -49,30 +77,30 @@ async function registerAnswer(request, env) {
 		return new Response(JSON.stringify({ success: false, message: 'Invalid data' }), { status: 400 });
 	}
 
-	if (QuestionId !== "lv5_q1") {
+	if (QuestionId !== 'lv5_q1') {
 		const insertAnsweredQuestion = `
             INSERT INTO AnsweredQuestions (GroupId, QuestionId, Result, ChallengerAnswer)
             VALUES (?, ?, ?, ?)
         `;
 		try {
-			await env.DB.prepare(insertAnsweredQuestion)
-				.bind(GroupId, QuestionId, Result, ChallengerAnswer)
-				.run();
+			await env.DB.prepare(insertAnsweredQuestion).bind(GroupId, QuestionId, Result, ChallengerAnswer).run();
 		} catch (err) {
 			console.error('Error updating AnsweredQuestion:', err);
 			return new Response(JSON.stringify({ success: false, message: 'Database error' }), { status: 500 });
 		}
 	}
 
-	const updateCountSql = Result === "Correct"
-		? `UPDATE Questions SET CollectCount = CollectCount + 1 WHERE ID = ?`
-		: `UPDATE Questions SET WrongCount = WrongCount + 1 WHERE ID = ?`;
+	const updateCountSql =
+		Result === 'Correct'
+			? `UPDATE Questions SET CollectCount = CollectCount + 1 WHERE ID = ?`
+			: `UPDATE Questions SET WrongCount = WrongCount + 1 WHERE ID = ?`;
 
 	try {
-		await env.DB.prepare(updateCountSql)
-			.bind(QuestionId)
-			.run();
-		return new Response(JSON.stringify({ success: true, message: `${Result === "Correct" ? "CollectCount" : "WrongCount"} successfully updated` }), { status: 200 });
+		await env.DB.prepare(updateCountSql).bind(QuestionId).run();
+		return new Response(
+			JSON.stringify({ success: true, message: `${Result === 'Correct' ? 'CollectCount' : 'WrongCount'} successfully updated` }),
+			{ status: 200 },
+		);
 	} catch (err) {
 		console.error('Error updating counts:', err);
 		return new Response(JSON.stringify({ success: false, message: 'Database error' }), { status: 500 });
@@ -87,7 +115,9 @@ async function finishChallenge(roomCode, request, env) {
 		return new Response(JSON.stringify({ success: false, message: 'Room code is required' }), { status: 400 });
 	}
 	if (!result || (result !== 'Cleared' && result !== 'Failed')) {
-		return new Response(JSON.stringify({ success: false, message: 'Invalid result value. Must be "Cleared" or "Failed".' }), { status: 400 });
+		return new Response(JSON.stringify({ success: false, message: 'Invalid result value. Must be "Cleared" or "Failed".' }), {
+			status: 400,
+		});
 	}
 	try {
 		const { ChallengeId, GroupId, Difficulty, GroupName } = room; // Ensure room is defined appropriately
@@ -96,7 +126,7 @@ async function finishChallenge(roomCode, request, env) {
 		const updateChallengeQuery = `UPDATE Challenges SET State = ? WHERE ChallengeId = ?`;
 		await env.DB.prepare(updateChallengeQuery).bind(result, ChallengeId).run();
 
-		if (result === "Cleared") {
+		if (result === 'Cleared') {
 			const SnackCount = [3, 4, 5][Difficulty - 1] || 0;
 
 			const updateGroupQuery = `
@@ -107,7 +137,7 @@ async function finishChallenge(roomCode, request, env) {
 
 			const challengeQuery = `SELECT StartTime FROM Challenges WHERE ChallengeId = ?`;
 			const { results: challenge } = await env.DB.prepare(challengeQuery).bind(ChallengeId).run();
-			if (!challenge) throw new Error("Challenge not found");
+			if (!challenge) throw new Error('Challenge not found');
 
 			const diffSeconds = Math.floor((new Date() - new Date(challenge.StartTime)) / 1000);
 			const insertClearTimeQuery = `
@@ -131,7 +161,7 @@ async function getRandomQuestion(level, groupId, env, attemptCounter = 0) {
 	const maxAttempts = 20; // Limit to avoid infinite recursion
 
 	if (attemptCounter >= maxAttempts) {
-		return new Response(JSON.stringify({ error: "No available questions after multiple attempts." }), { status: 404 });
+		return new Response(JSON.stringify({ error: 'No available questions after multiple attempts.' }), { status: 404 });
 	}
 
 	try {
@@ -157,11 +187,11 @@ async function getRandomQuestion(level, groupId, env, attemptCounter = 0) {
 				return new Response(JSON.stringify(questionResult), { status: 200 });
 			}
 		} else {
-			return new Response(JSON.stringify({ error: "No matching question found" }), { status: 404 });
+			return new Response(JSON.stringify({ error: 'No matching question found' }), { status: 404 });
 		}
 	} catch (err) {
 		console.error('Error executing query:', err.message);
-		return new Response(JSON.stringify({ error: "Database error", details: err.message }), { status: 500 });
+		return new Response(JSON.stringify({ error: 'Database error', details: err.message }), { status: 500 });
 	}
 }
 
@@ -178,22 +208,26 @@ async function registerChallenge(request, env) {
 		}
 
 		if (groupId === null) {
-			return new Response(JSON.stringify({ success: false, message: 'Group name already exists. Set dupCheck to true to proceed.' }), { status: 403 });
+			return new Response(JSON.stringify({ success: false, message: 'Group name already exists. Set dupCheck to true to proceed.' }), {
+				status: 403,
+			});
 		}
 
 		const questionCount = await countAvailableQuestions(db, groupId, difficulty);
 		console.log(questionCount, requiredQuestions);
-		if (questionCount >= requiredQuestions) {
-			await addChallenge(db, groupId, difficulty, "Web");
-			return new Response(JSON.stringify({ success: true, message: 'Challenge registered successfully' }), { status: 200 });
-		} else {
-			return new Response(JSON.stringify({ success: false, message: 'Not enough available questions' }), { status: 400 });
-		}
 		try {
-
+			if (questionCount >= requiredQuestions) {
+				const newChallengeId = crypto.randomUUID();
+				await addChallenge(db, groupId, difficulty, 'Web', newChallengeId);
+				return new Response(JSON.stringify({ success: true, message: 'Challenge registered successfully' }), { status: 200 });
+			} else {
+				return new Response(JSON.stringify({ success: false, message: 'Not enough available questions' }), { status: 400 });
+			}
 		} catch (error) {
 			console.error('Error in registerChallenge:', error);
-			return new Response(JSON.stringify({ success: false, message: 'Error registering challenge', error: error.message }), { status: 500 });
+			return new Response(JSON.stringify({ success: false, message: 'Error registering challenge', error: error.message }), {
+				status: 500,
+			});
 		}
 	} else {
 		return new Response(JSON.stringify({ success: false, message: 'Missing required fields' }), { status: 400 });
@@ -214,31 +248,32 @@ async function findOrCreateGroup(db, groupName, playerCount, dupCheck) {
 		return existingGroup[0].GroupId;
 	} else {
 		const newGroupId = crypto.randomUUID();
-		await db.prepare(
-			`INSERT INTO Groups(Name, GroupId, ChallengesCount, PlayerCount, WasCleared, SnackState)
-            VALUES(?, ?, ?, ?, ?, ?)`
-		).bind(groupName, newGroupId, 1, playerCount, 0, 0).run();
+		await db
+			.prepare(
+				`INSERT INTO Groups(Name, GroupId, ChallengesCount, PlayerCount, WasCleared, SnackState)
+            VALUES(?, ?, ?, ?, ?, ?)`,
+			)
+			.bind(groupName, newGroupId, 1, playerCount, 0, 0)
+			.run();
 		return newGroupId;
 	}
 }
 // Function to count available questions
 async function countAvailableQuestions(db, groupId, difficulty) {
-	const query =
-		`SELECT COUNT(*) AS count
+	const query = `SELECT COUNT(*) AS count
         FROM Questions Q
         LEFT JOIN AnsweredQuestions AQ ON Q.ID = AQ.QuestionId AND AQ.GroupId = ?
-		WHERE Q.Difficulty = ? AND(AQ.Result IS NULL OR AQ.Result NOT IN('Correct', 'Wrong'))`
-		;
+		WHERE Q.Difficulty = ? AND(AQ.Result IS NULL OR AQ.Result NOT IN('Correct', 'Wrong'))`;
 	const { results: row } = await db.prepare(query).bind(groupId, difficulty).run();
 	console.log(row[0]);
 	return row[0].count;
 }
 
 // Function to add challenge to the database
-async function addChallenge(db, groupId, difficulty, roomID) {
+async function addChallenge(db, groupId, difficulty, roomID, ChallengeId) {
 	const insertChallenge = `
-        INSERT INTO Challenges (GroupId, Difficulty, RoomId, State, StartTime)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO Challenges (GroupId, Difficulty, RoomId, State, StartTime,ChallengeId)
+        VALUES (?, ?, ?, ?, ?,?)
     `;
 	const challengeStartTime = new Date().toISOString();
 	await db.prepare(insertChallenge).bind(groupId, difficulty, roomID, 'Pending', challengeStartTime).run();
@@ -247,9 +282,17 @@ async function addChallenge(db, groupId, difficulty, roomID) {
 // Function to determine required questions based on difficulty
 function determineRequiredQuestions(difficulty) {
 	switch (difficulty) {
-		case 1: return 3; // Adjust as needed
-		case 2: return 5; // Adjust as needed
-		case 3: return 7; // Adjust as needed
-		default: return null; // Invalid difficulty
+		case 1:
+			return 7;
+		case 2:
+			return 7;
+		case 3:
+			return 6;
+		case 4:
+			return 1;
+		case 5:
+			return 1;
+		default:
+			return null;
 	}
 }
